@@ -1,0 +1,11 @@
+# 编译产物
+test
+*.o
+*.out
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
