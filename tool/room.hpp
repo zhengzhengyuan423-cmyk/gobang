@@ -26,6 +26,7 @@ private:
     user_table *_tb_user;                 // 用于更新玩家的胜负记录和分数（数据库句柄）
     online_manager *_online_user;         // 用于获取玩家的通信连接，进行消息广播（在线用户管理器句柄）
     std::vector<std::vector<int>> _board; // 棋盘数据结构，二维数组，0表示没有棋子，1表示白棋，2表示黑棋
+    int _cur_turn;                        // 当前轮到哪个玩家（用户ID）
 
 private:
     // 沿(row_off, col_off)方向检查是否五连珠
@@ -61,7 +62,7 @@ public:
     room(int room_id, user_table *tb_user, online_manager *online_user)
         : _room_id(room_id), _statu(GAME_START), _player_count(0),
           _tb_user(tb_user), _online_user(online_user),
-          _board(BOARD_ROW, std::vector<int>(BOARD_COL, 0))
+          _board(BOARD_ROW, std::vector<int>(BOARD_COL, 0)), _cur_turn(0)
     {
         DLOG << _room_id << "房间创建成功!!";
     }
@@ -86,6 +87,8 @@ public:
     int get_black_user() { return _black_id; }
     int opponent_id(int uid) { return uid == _white_id ? _black_id : _white_id; }
     int chess_color(int uid) { return uid == _white_id ? CHESS_WHITE : CHESS_BLACK; }
+    int cur_turn() { return _cur_turn; }
+    void set_cur_turn(int uid) { _cur_turn = uid; }
 
     /*处理下棋动作*/
     Json::Value handle_chess(Json::Value &req)
@@ -94,6 +97,22 @@ public:
         int chess_row = req["row"].asInt();
         int chess_col = req["col"].asInt();
         int cur_uid = req["uid"].asInt();
+
+        // 游戏已结束
+        if (_statu == GAME_OVER)
+        {
+            json_resp["result"] = false;
+            json_resp["reason"] = "游戏已结束！";
+            return json_resp;
+        }
+
+        // 不是当前回合玩家的操作
+        if (cur_uid != _cur_turn)
+        {
+            json_resp["result"] = false;
+            json_resp["reason"] = "还没轮到你下棋！";
+            return json_resp;
+        }
 
         // 对手不在线则当前玩家直接胜
         if (_online_user->is_in_game_room(opponent_id(cur_uid)) == false)
@@ -120,6 +139,8 @@ public:
         json_resp["winner"] = winner_id;
         if (winner_id != 0)
             json_resp["reason"] = "五星连珠，牛批格拉斯！";
+        else
+            _cur_turn = opponent_id(cur_uid);
         return json_resp;
     }
 
@@ -213,6 +234,7 @@ public:
     /*将指定的信息广播给房间中所有玩家*/
     void broadcast(Json::Value &rsp)
     {
+        rsp["cur_turn"] = _cur_turn;
         // 1. 对要响应的信息进行序列化，将Json::Value中的数据序列化成为json格式字符串
         std::string body;
         json_util::serialize(rsp, body);
@@ -246,7 +268,8 @@ private:
 
 public:
     /*初始化房间ID计数器*/
-    room_manager(user_table *ut, online_manager *om) : _next_rid(1), _tb_user(ut), _online_user(om)
+    room_manager(user_table *ut, online_manager *om)
+        : _next_rid(1), _tb_user(ut), _online_user(om)
     {
         DLOG << "房间管理模块初始化完毕！";
     }
@@ -273,6 +296,7 @@ public:
         room_ptr rp(new room(_next_rid, _tb_user, _online_user));
         rp->add_white_user(uid1);
         rp->add_black_user(uid2);
+        rp->set_cur_turn(uid1); // 白棋先手
         // 3. 将房间信息管理起来
         _rooms.insert(std::make_pair(_next_rid, rp));
         _users.insert(std::make_pair(uid1, _next_rid));
