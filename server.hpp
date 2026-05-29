@@ -1,5 +1,4 @@
-#ifndef __M_SRV_H__
-#define __M_SRV_H__
+#pragma once
 #include "db.hpp"
 #include "matcher.hpp"
 #include "online.hpp"
@@ -21,23 +20,16 @@ private:
 
 private:
     void file_handler(wsserver_t::connection_ptr &conn)
+    // 处理HTTP请求，返回静态资源文件
     {
-        // 静态资源请求的处理
-        // 1. 获取到请求uri-资源路径，了解客户端请求的页面文件名称
         websocketpp::http::parser::request req = conn->get_request();
         std::string uri = req.get_uri();
-        // 2. 组合出文件的实际路径   相对根目录 + uri
         std::string realpath = _web_root + uri;
-        // 3. 如果请求的是个目录，增加一个后缀  login.html,    /  ->  /login.html
         if (realpath.back() == '/')
-        {
             realpath += "login.html";
-        }
-        // 4. 读取文件内容
         Json::Value resp_json;
         std::string body;
-        bool ret = file_util::read(realpath, body);
-        //  1. 文件不存在，读取文件内容失败，返回404
+        bool ret = file_util::read(realpath, body); // 通过文件工具类读取指定路径的文件内容到body中
         if (ret == false)
         {
             body += "<html>";
@@ -51,12 +43,13 @@ private:
             conn->set_body(body);
             return;
         }
-        // 5. 设置响应正文
         conn->set_body(body);
         conn->set_status(websocketpp::http::status_code::ok);
     }
+
     void http_resp(wsserver_t::connection_ptr &conn, bool result,
                    websocketpp::http::status_code::value code, const std::string &reason)
+    // 处理HTTP请求，返回JSON格式的响应结果
     {
         Json::Value resp_json;
         resp_json["result"] = result;
@@ -66,15 +59,15 @@ private:
         conn->set_status(code);
         conn->set_body(resp_body);
         conn->append_header("Content-Type", "application/json");
+        // 对应前端的fetch请求中设置的Content-Type，告诉前端响应正文的格式是json格式，前端就会自动进行json反序列化，
+        // 否则前端会把响应正文当成普通字符串来处理，导致无法正确解析响应结果
         return;
     }
+
     void reg(wsserver_t::connection_ptr &conn)
     {
-        // 用户注册功能请求的处理
         websocketpp::http::parser::request req = conn->get_request();
-        // 1. 获取到请求正文
-        std::string req_body = conn->get_request_body();
-        // 2. 对正文进行json反序列化，得到用户名和密码
+        std::string req_body = conn->get_request_body(); // 获取请求正文
         Json::Value login_info;
         bool ret = json_util::unserialize(req_body, login_info);
         if (ret == false)
@@ -82,7 +75,6 @@ private:
             DLOG << "反序列化注册信息失败";
             return http_resp(conn, false, websocketpp::http::status_code::bad_request, "请求的正文格式错误");
         }
-        // 3. 进行数据库的用户新增操作
         if (login_info["username"].isNull() || login_info["password"].isNull())
         {
             DLOG << "用户名密码不完整";
@@ -97,6 +89,7 @@ private:
         //  如果成功了，则返回200
         return http_resp(conn, true, websocketpp::http::status_code::ok, "注册用户成功");
     }
+
     void login(wsserver_t::connection_ptr &conn)
     {
         // 用户登录功能请求的处理
@@ -116,14 +109,20 @@ private:
             return http_resp(conn, false, websocketpp::http::status_code::bad_request, "请输入用户名/密码");
         }
         ret = _ut.login(login_info);
+        // login函数会把查询到的用户信息写回login_info中
         if (ret == false)
         {
-            //  1. 如果验证失败，则返回400
             DLOG << "用户名密码错误";
             return http_resp(conn, false, websocketpp::http::status_code::bad_request, "用户名密码错误");
         }
+
         // 3. 如果验证成功，给客户端创建session
-        uint64_t uid = login_info["id"].asUInt64();
+        int uid = login_info["id"].asInt();
+        // 同一个用户不允许多点登录，如果这个用户已经有session了，则认为这个用户已经在别处登录了，返回错误：账号已在别处登录
+        if (_sm.has_session_by_uid(uid))
+        {
+            return http_resp(conn, false, websocketpp::http::status_code::bad_request, "账号已在别处登录");
+        }
         session_ptr ssp = _sm.create_session(uid, LOGIN);
         if (ssp.get() == nullptr)
         {
@@ -131,14 +130,18 @@ private:
             return http_resp(conn, false, websocketpp::http::status_code::internal_server_error, "创建会话失败");
         }
         _sm.set_session_expire_time(ssp->_ssid, SESSION_TIMEOUT);
+
         // 4. 设置响应头部：Set-Cookie,将sessionid通过cookie返回
         std::string cookie_ssid = "SSID=" + std::to_string(ssp->_ssid);
         conn->append_header("Set-Cookie", cookie_ssid);
         return http_resp(conn, true, websocketpp::http::status_code::ok, "登录成功");
     }
+
+    // 从cookie字符串中获取指定key的value
     bool get_cookie_val(const std::string &cookie_str, const std::string &key, std::string &val)
     {
-        // Cookie: SSID=XXX; path=/;
+        // cookie字符串的格式：key1=value1; key2=value2; key3=value3
+        // Cookie: SSID=123456; theme=dark; lang=zh-CN
         // 1. 以 ; 作为间隔，对字符串进行分割，得到各个单个的cookie信息
         std::string sep = "; ";
         std::vector<std::string> cookie_arr;
@@ -160,42 +163,29 @@ private:
         }
         return false;
     }
+
     void info(wsserver_t::connection_ptr &conn)
     {
-        // 用户信息获取功能请求的处理
         Json::Value err_resp;
-        // 1. 获取请求信息中的Cookie，从Cookie中获取ssid
         std::string cookie_str = conn->get_request_header("Cookie");
-        if (cookie_str.empty())
-        {
-            // 如果没有cookie，返回错误：没有cookie信息，让客户端重新登录
-            DLOG << "info-没有找到cookie信息，请重新登录";
+        if (cookie_str.empty())       
             return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到cookie信息，请重新登录");
-        }
-        // 1.5. 从cookie中取出ssid
+        
         std::string ssid_str;
         bool ret = get_cookie_val(cookie_str, "SSID", ssid_str);
-        if (ret == false)
-        {
-            // cookie中没有ssid，返回错误：没有ssid信息，让客户端重新登录
+        if (ret == false)       
             return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到ssid信息，请重新登录");
-        }
-        // 2. 在session管理中查找对应的会话信息
+        
         session_ptr ssp = _sm.get_session_by_ssid(std::stol(ssid_str));
-        if (ssp.get() == nullptr)
-        {
-            // 没有找到session，则认为登录已经过期，需要重新登录
+        if (ssp.get() == nullptr)     
             return http_resp(conn, true, websocketpp::http::status_code::bad_request, "登录过期，请重新登录");
-        }
-        // 3. 从数据库中取出用户信息，进行序列化发送给客户端
-        uint64_t uid = ssp->get_user();
+        
+        int uid = ssp->get_user();
         Json::Value user_info;
         ret = _ut.select_by_id(uid, user_info);
-        if (ret == false)
-        {
-            // 获取用户信息失败，返回错误：找不到用户信息
+        if (ret == false)    
             return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到用户信息，请重新登录");
-        }
+                 
         std::string body;
         json_util::serialize(user_info, body);
         conn->set_body(body);
@@ -204,29 +194,25 @@ private:
         // 4. 刷新session的过期时间
         _sm.set_session_expire_time(ssp->_ssid, SESSION_TIMEOUT);
     }
+
     void http_callback(websocketpp::connection_hdl hdl)
     {
         wsserver_t::connection_ptr conn = _wssrv.get_con_from_hdl(hdl);
+        // 通过连接句柄获取连接指针（弱转强）
         websocketpp::http::parser::request req = conn->get_request();
+        // 把客户端发过来的 HTTP 请求报文结构体给抠出来
         std::string method = req.get_method();
         std::string uri = req.get_uri();
         if (method == "POST" && uri == "/reg")
-        {
             return reg(conn);
-        }
         else if (method == "POST" && uri == "/login")
-        {
             return login(conn);
-        }
         else if (method == "GET" && uri == "/info")
-        {
             return info(conn);
-        }
         else
-        {
             return file_handler(conn);
-        }
     }
+
     void ws_resp(wsserver_t::connection_ptr conn, Json::Value &resp)
     {
         std::string body;
@@ -346,15 +332,10 @@ private:
         websocketpp::http::parser::request req = conn->get_request();
         std::string uri = req.get_uri();
         if (uri == "/hall")
-        {
-            // 建立了游戏大厅的长连接
-            return wsopen_game_hall(conn);
-        }
-        else if (uri == "/room")
-        {
-            // 建立了游戏房间的长连接
+            return wsopen_game_hall(conn);      
+        else if (uri == "/room")    
             return wsopen_game_room(conn);
-        }
+        
     }
     void wsclose_game_hall(wsserver_t::connection_ptr conn)
     {
@@ -402,6 +383,7 @@ private:
             return wsclose_game_room(conn);
         }
     }
+    
     void wsmsg_game_hall(wsserver_t::connection_ptr conn, wsserver_t::message_ptr msg)
     {
         Json::Value resp_json;
@@ -506,15 +488,19 @@ public:
                   const std::string &dbname,
                   uint16_t port = 3306,
                   const std::string &wwwroot = WWWROOT) : _web_root(wwwroot), _ut(host, user, pass, dbname, port),
-                                                          _rm(&_ut, &_om), _sm(&_wssrv), _mm(&_rm, &_ut, &_om)
+                                                          _rm(&_ut, &_om, &_wssrv), _sm(&_wssrv), _mm(&_rm, &_ut, &_om)
     {
-        _wssrv.set_access_channels(websocketpp::log::alevel::none);
-        _wssrv.init_asio();
+        _wssrv.set_access_channels(websocketpp::log::alevel::none); // 关闭websocketpp的日志输出
+        _wssrv.init_asio();                                         // 初始化Asio，准备使用Asio的网络功能
         _wssrv.set_reuse_addr(true);
         _wssrv.set_http_handler(std::bind(&gobang_server::http_callback, this, std::placeholders::_1));
+        // 设置HTTP请求的回调函数，当服务器接收到HTTP请求时，会调用http_callback函数进行处理
         _wssrv.set_open_handler(std::bind(&gobang_server::wsopen_callback, this, std::placeholders::_1));
+        // 设置WebSocket连接建立成功时的回调函数，当服务器成功建立WebSocket连接时，会调用wsopen_callback函数进行处理
         _wssrv.set_close_handler(std::bind(&gobang_server::wsclose_callback, this, std::placeholders::_1));
+        // 设置WebSocket连接断开时的回调函数，当服务器的WebSocket连接断开时，会调用wsclose_callback函数进行处理
         _wssrv.set_message_handler(std::bind(&gobang_server::wsmsg_callback, this, std::placeholders::_1, std::placeholders::_2));
+        // 设置WebSocket消息处理函数，当服务器接收到WebSocket消息时，会调用wsmsg_callback函数进行处理
     }
     /*启动服务器*/
     void start(int port)
@@ -524,4 +510,3 @@ public:
         _wssrv.run();
     }
 };
-#endif

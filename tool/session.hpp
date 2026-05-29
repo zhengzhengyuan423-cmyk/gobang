@@ -76,6 +76,17 @@ public:
         _session.erase(ssid);
     }
 
+    bool has_session_by_uid(int uid)
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+        for (auto &p : _session)
+        {
+            if (p.second->get_user() == uid)
+                return true;
+        }
+        return false;
+    }
+
     void set_session_expire_time(int ssid, int ms)
     {
         std::shared_ptr<session> ssp = get_session_by_ssid(ssid);

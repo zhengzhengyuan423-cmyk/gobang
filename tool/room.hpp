@@ -25,8 +25,10 @@ private:
     int _black_id;                        // 房间中黑棋玩家的用户ID
     user_table *_tb_user;                 // 用于更新玩家的胜负记录和分数（数据库句柄）
     online_manager *_online_user;         // 用于获取玩家的通信连接，进行消息广播（在线用户管理器句柄）
+    wsserver_t *_server;                  // 用于设置落子超时计时器
     std::vector<std::vector<int>> _board; // 棋盘数据结构，二维数组，0表示没有棋子，1表示白棋，2表示黑棋
     int _cur_turn;                        // 当前轮到哪个玩家（用户ID）
+    wsserver_t::timer_ptr _turn_timer;    // 落子超时计时器
 
 private:
     // 沿(row_off, col_off)方向检查是否五连珠
@@ -59,9 +61,9 @@ private:
     }
 
 public:
-    room(int room_id, user_table *tb_user, online_manager *online_user)
+    room(int room_id, user_table *tb_user, online_manager *online_user, wsserver_t *server)
         : _room_id(room_id), _statu(GAME_START), _player_count(0),
-          _tb_user(tb_user), _online_user(online_user),
+          _tb_user(tb_user), _online_user(online_user), _server(server),
           _board(BOARD_ROW, std::vector<int>(BOARD_COL, 0)), _cur_turn(0)
     {
         DLOG << _room_id << "房间创建成功!!";
@@ -89,6 +91,69 @@ public:
     int chess_color(int uid) { return uid == _white_id ? CHESS_WHITE : CHESS_BLACK; }
     int cur_turn() { return _cur_turn; }
     void set_cur_turn(int uid) { _cur_turn = uid; }
+
+    void cancel_turn_timer()
+    {
+        if (_turn_timer.get() != nullptr)
+        {
+            _turn_timer->cancel();
+            _turn_timer = wsserver_t::timer_ptr();
+        }
+    }
+
+    void start_turn_timer()
+    {
+        cancel_turn_timer();
+        int expected_turn = _cur_turn;
+        _turn_timer = _server->set_timer(20000, [this, expected_turn](const std::error_code &ec)
+        {
+            if (ec) return;
+            if (_statu == GAME_OVER) return;
+            if (_cur_turn != expected_turn) return;
+            auto_move();
+        });
+    }
+
+    void auto_move()
+    {
+        if (_statu == GAME_OVER) return;
+        int cur_uid = _cur_turn;
+        // 扫描找到第一个空位
+        int row = -1, col = -1;
+        for (int r = 0; r < BOARD_ROW && row == -1; r++)
+            for (int c = 0; c < BOARD_COL && row == -1; c++)
+                if (_board[r][c] == 0) { row = r; col = c; }
+
+        int cur_color = chess_color(cur_uid);
+        _board[row][col] = cur_color;
+
+        Json::Value json_resp;
+        json_resp["optype"] = "put_chess";
+        json_resp["result"] = true;
+        json_resp["reason"] = "思考超时，系统自动落子";
+        json_resp["room_id"] = _room_id;
+        json_resp["uid"] = cur_uid;
+        json_resp["row"] = row;
+        json_resp["col"] = col;
+
+        int winner_id = check_win(row, col, cur_color);
+        json_resp["winner"] = winner_id;
+        if (winner_id != 0)
+        {
+            int loser_id = opponent_id(winner_id);
+            _tb_user->win(winner_id);
+            _tb_user->lose(loser_id);
+            _statu = GAME_OVER;
+            json_resp["reason"] = "对方思考超时，五星连珠！";
+        }
+        else
+        {
+            _cur_turn = opponent_id(cur_uid);
+        }
+        broadcast(json_resp);
+        if (_statu != GAME_OVER)
+            start_turn_timer();
+    }
 
     /*处理下棋动作*/
     Json::Value handle_chess(Json::Value &req)
@@ -182,6 +247,7 @@ public:
             _tb_user->win(winner_id);
             _tb_user->lose(loser_id);
             _statu = GAME_OVER;
+            cancel_turn_timer();
             broadcast(json_resp);
         }
         // 房间中玩家数量--
@@ -213,6 +279,11 @@ public:
                 _tb_user->win(winner_id);
                 _tb_user->lose(loser_id);
                 _statu = GAME_OVER;
+                cancel_turn_timer();
+            }
+            else if (json_resp["result"].asBool())
+            {
+                start_turn_timer();
             }
         }
         else if (req["optype"].asString() == "chat")
@@ -263,13 +334,14 @@ private:
     std::mutex _mutex;
     user_table *_tb_user;                     // 用于更新玩家的胜负记录和分数（数据库句柄）
     online_manager *_online_user;             // 用于获取玩家的通信连接，进行消息广播（在线用户管理器句柄）
+    wsserver_t *_server;                      // 用于房间内的计时器
     std::unordered_map<int, room_ptr> _rooms; // 用于管理房间ID与房间信息的关系，房间信息通过智能指针进行管理
     std::unordered_map<int, int> _users;      // 用于管理用户ID与房间ID的关系，方便通过用户ID获取房间信息
 
 public:
     /*初始化房间ID计数器*/
-    room_manager(user_table *ut, online_manager *om)
-        : _next_rid(1), _tb_user(ut), _online_user(om)
+    room_manager(user_table *ut, online_manager *om, wsserver_t *srv)
+        : _next_rid(1), _tb_user(ut), _online_user(om), _server(srv)
     {
         DLOG << "房间管理模块初始化完毕！";
     }
@@ -293,10 +365,11 @@ public:
 
         // 2. 创建房间，将用户信息添加到房间中
         std::unique_lock<std::mutex> lock(_mutex);
-        room_ptr rp(new room(_next_rid, _tb_user, _online_user));
+        room_ptr rp(new room(_next_rid, _tb_user, _online_user, _server));
         rp->add_white_user(uid1);
         rp->add_black_user(uid2);
         rp->set_cur_turn(uid1); // 白棋先手
+        rp->start_turn_timer();
         // 3. 将房间信息管理起来
         _rooms.insert(std::make_pair(_next_rid, rp));
         _users.insert(std::make_pair(uid1, _next_rid));
@@ -346,6 +419,7 @@ public:
         room_ptr rp = get_room_by_rid(rid);
         if (rp.get() == nullptr)
             return;
+        rp->cancel_turn_timer();
         // 2. 通过房间信息，获取房间中所有用户的ID
         int uid1 = rp->get_white_user();
         int uid2 = rp->get_black_user();

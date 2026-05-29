@@ -26,7 +26,6 @@
             <div id="chat_show">
                 <p id="self_msg">你好！</p></br>
                 <p id="peer_msg">你好！</p></br>
-                <p id="peer_msg">leihoua~</p></br>
             </div>
             <div id="msg_show">
                 <input type="text" id="chat_input">
@@ -46,6 +45,8 @@
         var room_info = null;//用于保存房间信息
         var curTurn = 0;
         var gameOver = false;
+        var countdown = 20;
+        var countdownTimer = null;
 
         function initGame() {
             initBoard();
@@ -149,9 +150,28 @@
         function set_screen(me) {
             var screen_div = document.getElementById("screen");
             if (me) {
-                screen_div.innerHTML = "轮到己方走棋...";
+                screen_div.innerHTML = "轮到己方走棋... (剩余 " + countdown + "s)";
             } else {
                 screen_div.innerHTML = "轮到对方走棋...";
+            }
+        }
+        function startCountdown() {
+            stopCountdown();
+            countdown = 20;
+            set_screen(true);
+            countdownTimer = setInterval(function () {
+                countdown--;
+                if (countdown <= 0) {
+                    stopCountdown();
+                    return;
+                }
+                set_screen(true);
+            }, 1000);
+        }
+        function stopCountdown() {
+            if (countdownTimer != null) {
+                clearInterval(countdownTimer);
+                countdownTimer = null;
             }
         }
         ws_hdl.onmessage = function (evt) {
@@ -162,7 +182,8 @@
             if (info.optype == "room_ready") {
                 room_info = info;
                 curTurn = info.cur_turn;
-                set_screen(curTurn == room_info.uid);
+                if (curTurn == room_info.uid) startCountdown();
+                else { stopCountdown(); set_screen(false); }
                 document.getElementById("exit_button").style.display = "block";
                 initGame();
             } else if (info.optype == "put_chess") {
@@ -175,7 +196,6 @@
                 }
                 //根据服务端返回的cur_turn更新当前回合
                 curTurn = info.cur_turn;
-                set_screen(curTurn == room_info.uid);
                 //绘制棋子的颜色，应该根据当前下棋角色的颜色确定
                 isWhite = info.uid == room_info.white_id ? true : false;
                 //绘制棋子
@@ -185,15 +205,20 @@
                     chessBoard[info.row][info.col] = isWhite ? 1 : 2;
                 }
                 //是否有胜利者
-                if (info.winner == 0) {
-                    return;
-                }
-                gameOver = true;
-                var screen_div = document.getElementById("screen");
-                if (room_info.uid == info.winner) {
-                    screen_div.innerHTML = info.reason;
+                if (info.winner != 0) {
+                    stopCountdown();
+                    gameOver = true;
+                    var screen_div = document.getElementById("screen");
+                    if (room_info.uid == info.winner) {
+                        screen_div.innerHTML = info.reason;
+                    } else {
+                        screen_div.innerHTML = "你输了";
+                    }
+                } else if (curTurn == room_info.uid) {
+                    startCountdown();
                 } else {
-                    screen_div.innerHTML = "你输了";
+                    stopCountdown();
+                    set_screen(false);
                 }
             } else if (info.optype == "chat") {
                 //收到一条消息，判断result，如果为true则渲染一条消息到显示框中
