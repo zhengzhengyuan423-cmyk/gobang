@@ -53,13 +53,15 @@
             context.strokeStyle = "#BFBFBF";
             // 背景图片
             let logo = new Image();
-            logo.src = "image/sky.jpeg";
             logo.onload = function () {
-                // 绘制图片
                 context.drawImage(logo, 0, 0, 450, 450);
-                // 绘制棋盘
                 drawChessBoard();
-            }
+            };
+            logo.onerror = function () {
+                // 图片加载失败，直接画棋盘
+                drawChessBoard();
+            };
+            logo.src = "image/sky.jpeg";
         }
         function initBoard() {
             for (let i = 0; i < BOARD_ROW_AND_COL; i++) {

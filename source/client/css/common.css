@@ -9,6 +9,7 @@
 html,
 body {
     height: 100%;
+    overflow: auto;
 
     background-image: url(../image/cat.jpg);
     background-repeat: no-repeat;

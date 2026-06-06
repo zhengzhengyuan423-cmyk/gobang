@@ -1,10 +1,10 @@
 #pragma once
-#include "db.hpp"
-#include "matcher.hpp"
-#include "online.hpp"
-#include "room.hpp"
-#include "session.hpp"
-#include "util.hpp"
+#include "tool/db.hpp"
+#include "tool/matcher.hpp"
+#include "tool/online.hpp"
+#include "tool/room.hpp"
+#include "tool/session.hpp"
+#include "tool/util.hpp"
 
 #define WWWROOT "./client/"
 class gobang_server
@@ -168,24 +168,24 @@ private:
     {
         Json::Value err_resp;
         std::string cookie_str = conn->get_request_header("Cookie");
-        if (cookie_str.empty())       
+        if (cookie_str.empty())
             return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到cookie信息，请重新登录");
-        
+
         std::string ssid_str;
         bool ret = get_cookie_val(cookie_str, "SSID", ssid_str);
-        if (ret == false)       
+        if (ret == false)
             return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到ssid信息，请重新登录");
-        
+
         session_ptr ssp = _sm.get_session_by_ssid(std::stol(ssid_str));
-        if (ssp.get() == nullptr)     
+        if (ssp.get() == nullptr)
             return http_resp(conn, true, websocketpp::http::status_code::bad_request, "登录过期，请重新登录");
-        
+
         int uid = ssp->get_user();
         Json::Value user_info;
         ret = _ut.select_by_id(uid, user_info);
-        if (ret == false)    
+        if (ret == false)
             return http_resp(conn, true, websocketpp::http::status_code::bad_request, "找不到用户信息，请重新登录");
-                 
+
         std::string body;
         json_util::serialize(user_info, body);
         conn->set_body(body);
@@ -332,10 +332,9 @@ private:
         websocketpp::http::parser::request req = conn->get_request();
         std::string uri = req.get_uri();
         if (uri == "/hall")
-            return wsopen_game_hall(conn);      
-        else if (uri == "/room")    
+            return wsopen_game_hall(conn);
+        else if (uri == "/room")
             return wsopen_game_room(conn);
-        
     }
     void wsclose_game_hall(wsserver_t::connection_ptr conn)
     {
@@ -383,7 +382,7 @@ private:
             return wsclose_game_room(conn);
         }
     }
-    
+
     void wsmsg_game_hall(wsserver_t::connection_ptr conn, wsserver_t::message_ptr msg)
     {
         Json::Value resp_json;
