@@ -1,6 +1,8 @@
 # 编译产物
 *.o
 *.out
+server
+test
 
 # 编辑器
 .vscode/
